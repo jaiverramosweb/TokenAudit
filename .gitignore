@@ -1,0 +1,18 @@
+# Generado por la skill si alguien la corre desde dentro de este repo
+TOKEN_USAGE.md
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

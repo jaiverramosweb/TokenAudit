@@ -1,0 +1,4 @@
+# Forzamos LF en scripts shell y python para que no se rompan en Windows
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
