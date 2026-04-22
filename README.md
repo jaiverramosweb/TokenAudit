@@ -44,8 +44,25 @@ caros, proyectos que escalan más rápido de lo esperado).
 
 - [Claude Code](https://claude.com/claude-code) instalado.
 - **Python 3.8+** en el `PATH` (comando `python`, `python3` o `py`).
-- **Bash**. En Windows usá **Git Bash** (viene con Git for Windows) o la
-  shell de **Laragon**.
+- **Bash**. En Windows **hay que usar Git Bash** (viene con
+  [Git for Windows](https://git-scm.com/download/win)) o la shell de
+  Laragon.
+
+> **ATENCIÓN en Windows**: los comandos `curl | bash` de este README
+> **no funcionan en CMD ni en PowerShell**. Tienen que correrse en
+> **Git Bash**. Síntomas típicos si se corren en la terminal equivocada:
+>
+> - En CMD:
+>   `curl: (35) schannel: CRYPT_E_NO_REVOCATION_CHECK` — el curl nativo
+>   de Windows no verifica revocación detrás de proxy/firewall
+>   corporativo.
+> - En PowerShell:
+>   `Invoke-WebRequest: No se encuentra ningún parámetro 'fsSL'` —
+>   `curl` en PowerShell es un alias a `Invoke-WebRequest`, que usa
+>   otros flags.
+>
+> Cómo abrir Git Bash: buscar "Git Bash" en el menú inicio, o click
+> derecho en cualquier carpeta del explorador → "Git Bash Here".
 
 ---
 
@@ -60,9 +77,11 @@ Dos **modos** posibles:
 
 Y dos **formas** de ejecutar el install (elegí la que prefieras):
 
-### Forma A — Una sola línea con `curl` [la más simple]
+### Forma A — Una sola línea [la más simple]
 
-Si confiás en correr scripts remotos (ver [aviso de seguridad](#seguridad-curl--bash)):
+Si confiás en correr scripts remotos (ver [aviso de seguridad](#seguridad-curl--bash)). Elegí según tu shell:
+
+#### Git Bash (Windows), macOS, Linux
 
 **Modo local:**
 
@@ -77,12 +96,46 @@ cd /ruta/a/tu/proyecto
 curl -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh | bash -s -- --project
 ```
 
-El `bootstrap.sh`:
+#### PowerShell (Windows)
+
+Para cuando no querés abrir Git Bash primero. Requiere Git for Windows
+instalado (provee el `bash.exe` interno que necesita el install).
+
+**Modo local:**
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.ps1 | iex
+```
+
+**Modo proyecto** (PowerShell no acepta args vía `| iex`, así que
+descargamos + corremos):
+
+```powershell
+cd C:\ruta\a\tu\proyecto
+$tmp = "$env:TEMP\tokenaudit-bootstrap.ps1"
+iwr -useb https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.ps1 -OutFile $tmp
+& $tmp --project
+Remove-Item $tmp
+```
+
+> **Alternativa rápida para modo proyecto en PowerShell** (sin archivo
+> temporal): podés setear el env var `TOKENAUDIT_PROJECT=1` antes del
+> `iex`:
+>
+> ```powershell
+> $env:TOKENAUDIT_PROJECT=1
+> iwr -useb https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.ps1 | iex
+> Remove-Item Env:TOKENAUDIT_PROJECT
+> ```
+
+#### ¿Cómo funciona?
+
+El `bootstrap.sh` (o `bootstrap.ps1`, que lo invoca vía `bash.exe`):
 
 1. Clona el repo a `~/TokenAudit/` (si ya existe, hace `git pull --ff-only`).
 2. Ejecuta `install.sh` pasándole los argumentos que le diste (ej `--project`).
 
-**Overrides útiles** (variables de entorno antes del `bash`):
+**Overrides útiles** (variables de entorno antes del comando):
 
 | Variable | Default | Qué hace |
 |----------|---------|----------|
@@ -90,10 +143,17 @@ El `bootstrap.sh`:
 | `TOKENAUDIT_BRANCH` | `main` | Usar otra rama |
 | `TOKENAUDIT_DIR` | `~/TokenAudit` | Clonar en otra carpeta |
 
-Ejemplo:
+Ejemplo (Git Bash):
 
 ```bash
 TOKENAUDIT_BRANCH=dev curl -fsSL https://.../bootstrap.sh | bash
+```
+
+Ejemplo (PowerShell):
+
+```powershell
+$env:TOKENAUDIT_BRANCH="dev"
+iwr -useb https://.../bootstrap.ps1 | iex
 ```
 
 ### Forma B — Clone manual [la transparente]
@@ -155,17 +215,26 @@ Tanto `install.sh` como `bootstrap.sh` son **idempotentes**: correrlos
 dos veces no duplica nada. Si ya existía el hook, lo **actualiza** en
 lugar de agregar uno nuevo.
 
-### Seguridad (`curl | bash`)
+### Seguridad (`curl | bash` y `iwr | iex`)
 
-Ejecutar un script remoto directamente vía `curl | bash` significa
-correr código sin haberlo leído. Para equipos internos con acceso al
-repo, la confianza ya existe. Si publicás TokenAudit afuera, recomendá
-esta variante a los paranoicos:
+Ejecutar un script remoto directamente vía `curl | bash` o `iwr | iex`
+significa correr código sin haberlo leído. Para equipos internos con
+acceso al repo, la confianza ya existe. Para los paranoicos:
+
+**Git Bash / macOS / Linux:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh -o bootstrap.sh
 less bootstrap.sh     # revisá el contenido
 bash bootstrap.sh     # ahora sí
+```
+
+**PowerShell:**
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.ps1 -OutFile bootstrap.ps1
+notepad bootstrap.ps1    # revisá el contenido
+.\bootstrap.ps1          # ahora sí
 ```
 
 ---
@@ -220,14 +289,22 @@ persistente: vive en el proyecto, crece con el tiempo y tiene:
 
 ## Actualizar TokenAudit
 
-**Con el one-liner** (equivalente a reinstalar — el `bootstrap.sh` hace
-`git pull --ff-only` si el repo ya existe):
+Volvé a correr **la misma línea** con la que instalaste. El bootstrap es
+idempotente: si el clone ya existe hace `git pull --ff-only` y reinstala.
+
+**Git Bash / macOS / Linux:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh | bash
 ```
 
-**Manualmente:**
+**PowerShell:**
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.ps1 | iex
+```
+
+**Manualmente (si clonaste con Forma B):**
 
 ```bash
 cd ~/TokenAudit
@@ -321,6 +398,32 @@ convertilo:
 ```bash
 sed -i 's/\r$//' install.sh uninstall.sh
 ```
+
+**`curl: (35) schannel: CRYPT_E_NO_REVOCATION_CHECK`** (típico en redes
+corporativas con proxy/firewall). Pasa cuando tu Git Bash termina usando
+el `curl.exe` nativo de Windows (en `System32`) en vez del de Git for
+Windows (`/mingw64/bin/curl`). El de Windows usa `schannel` y no puede
+chequear la revocación del cert cuando hay interceptación TLS de por
+medio. Verificalo con `which curl`. Hay tres salidas, en orden de
+preferencia:
+
+1. **Usar `git clone` en vez de `curl`** (lo más robusto, git ya sabe
+   atravesar el proxy corporativo si podés clonar cualquier otro repo):
+   ```bash
+   git clone https://github.com/jaiverramosweb/TokenAudit.git ~/TokenAudit && ~/TokenAudit/install.sh
+   ```
+   Para modo proyecto, agregá `--project` al final.
+
+2. **Forzar el curl bueno de Git Bash** (el de OpenSSL, no schannel):
+   ```bash
+   /mingw64/bin/curl -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh | bash
+   ```
+
+3. **Pedirle al curl de Windows que no chequee revocación** (funciona
+   pero deja un flag de seguridad bajado):
+   ```bash
+   curl --ssl-no-revoke -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh | bash
+   ```
 
 **Quiero ver qué payload recibe el hook para debuguear**
 Editá `~/.claude/skills/token-usage/subagent_tokens_hook.py` (o la copia
