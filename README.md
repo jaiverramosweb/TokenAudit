@@ -44,25 +44,20 @@ caros, proyectos que escalan más rápido de lo esperado).
 
 - [Claude Code](https://claude.com/claude-code) instalado.
 - **Python 3.8+** en el `PATH` (comando `python`, `python3` o `py`).
-- **Bash**. En Windows **hay que usar Git Bash** (viene con
-  [Git for Windows](https://git-scm.com/download/win)) o la shell de
-  Laragon.
+- **Para la instalación**: una de las dos opciones:
+  - **PowerShell 5.1+** (viene con Windows — sirve sin instalar nada más), o
+  - **Bash**: Git Bash en Windows (viene con [Git for Windows](https://git-scm.com/download/win)),
+    Laragon shell, o bash nativo en macOS/Linux.
 
-> **ATENCIÓN en Windows**: los comandos `curl | bash` de este README
-> **no funcionan en CMD ni en PowerShell**. Tienen que correrse en
-> **Git Bash**. Síntomas típicos si se corren en la terminal equivocada:
+> **Importante en Windows**: los comandos `curl | bash` **no funcionan
+> en CMD ni en PowerShell** (distinta sintaxis, problemas de curl
+> nativo con schannel en redes corporativas). Usá alguna de estas tres:
 >
-> - En CMD:
->   `curl: (35) schannel: CRYPT_E_NO_REVOCATION_CHECK` — el curl nativo
->   de Windows no verifica revocación detrás de proxy/firewall
->   corporativo.
-> - En PowerShell:
->   `Invoke-WebRequest: No se encuentra ningún parámetro 'fsSL'` —
->   `curl` en PowerShell es un alias a `Invoke-WebRequest`, que usa
->   otros flags.
->
-> Cómo abrir Git Bash: buscar "Git Bash" en el menú inicio, o click
-> derecho en cualquier carpeta del explorador → "Git Bash Here".
+> 1. **PowerShell + `iwr | iex`** — instalador PowerShell nativo, no
+>    requiere Git for Windows. Ver sección "PowerShell" abajo.
+> 2. **Git Bash + `curl | bash`** — si ya lo tenés abierto. Buscá
+>    "Git Bash" en el menú inicio.
+> 3. **Clone manual** — `git clone` + `./install.sh`. Requiere Git.
 
 ---
 
@@ -96,10 +91,11 @@ cd /ruta/a/tu/proyecto
 curl -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh | bash -s -- --project
 ```
 
-#### PowerShell (Windows)
+#### PowerShell (Windows) — sin Git for Windows requerido
 
-Para cuando no querés abrir Git Bash primero. Requiere Git for Windows
-instalado (provee el `bash.exe` interno que necesita el install).
+Solo necesita **Python 3.8+**. Opcionalmente detecta Git for Windows y
+lo usa (más rápido); si no, cae automáticamente a un camino PowerShell
+nativo que descarga el repo como ZIP.
 
 **Modo local:**
 
@@ -107,8 +103,18 @@ instalado (provee el `bash.exe` interno que necesita el install).
 iwr -useb https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.ps1 | iex
 ```
 
-**Modo proyecto** (PowerShell no acepta args vía `| iex`, así que
-descargamos + corremos):
+**Modo proyecto** (PowerShell no acepta args vía `| iex`; hay dos
+formas):
+
+Opción A — con env var (una sola línea):
+
+```powershell
+$env:TOKENAUDIT_PROJECT=1
+iwr -useb https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.ps1 | iex
+Remove-Item Env:TOKENAUDIT_PROJECT
+```
+
+Opción B — descargar + ejecutar (para pasar otros flags):
 
 ```powershell
 cd C:\ruta\a\tu\proyecto
@@ -118,15 +124,10 @@ iwr -useb https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/boots
 Remove-Item $tmp
 ```
 
-> **Alternativa rápida para modo proyecto en PowerShell** (sin archivo
-> temporal): podés setear el env var `TOKENAUDIT_PROJECT=1` antes del
-> `iex`:
->
-> ```powershell
-> $env:TOKENAUDIT_PROJECT=1
-> iwr -useb https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.ps1 | iex
-> Remove-Item Env:TOKENAUDIT_PROJECT
-> ```
+> **Forzar el camino PowerShell nativo** (sin usar Git Bash aunque esté
+> instalado): `$env:TOKENAUDIT_NO_BASH=1` antes del `iex`. Útil para
+> debuggear o para usuarios que NO tienen Git for Windows instalado —
+> el script descarga el repo como ZIP desde GitHub, no necesita `git`.
 
 #### ¿Cómo funciona?
 
@@ -139,9 +140,11 @@ El `bootstrap.sh` (o `bootstrap.ps1`, que lo invoca vía `bash.exe`):
 
 | Variable | Default | Qué hace |
 |----------|---------|----------|
-| `TOKENAUDIT_REPO` | la del `bootstrap.sh` | Usar otro repo (útil para forks) |
+| `TOKENAUDIT_REPO` | la hardcodeada | Usar otro repo (útil para forks) |
 | `TOKENAUDIT_BRANCH` | `main` | Usar otra rama |
-| `TOKENAUDIT_DIR` | `~/TokenAudit` | Clonar en otra carpeta |
+| `TOKENAUDIT_DIR` | `~/TokenAudit` | Clonar/extraer en otra carpeta |
+| `TOKENAUDIT_PROJECT` | `0` | `=1` → modo proyecto sin flag (útil con `iex`) |
+| `TOKENAUDIT_NO_BASH` | `0` | `=1` → saltear camino bash en PowerShell, usar solo ZIP |
 
 Ejemplo (Git Bash):
 
