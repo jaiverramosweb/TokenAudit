@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Aggregate Claude Code token usage from local JSONL transcripts.
+"""Agregador unificado de uso de tokens (Claude Code + opencode).
 
-In addition to printing/exporting, maintains a per-project
-``TOKEN_USAGE.md`` registry inside each project's working directory.
-The registry keeps lifetime totals, an all-time daily breakdown, and an
-append-only query log so every run is recorded.
+Lee transcripts de ambas herramientas:
+  - Claude Code: JSONL en ``~/.claude/projects/*/*.jsonl``
+  - opencode:    SQLite en ``~/.local/share/opencode/opencode.db``
+
+Produce una vista unificada con totales por día, proyecto, modelo y agente.
+Mantiene un ``TOKEN_USAGE.md`` por proyecto (lifetime totals, desglose
+diario, sesiones con títulos auto-detectados, historial de consultas).
+
+Si una herramienta no está instalada, simplemente se omite.
 """
 
 from __future__ import annotations
@@ -12,13 +17,17 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# ---- paths ------------------------------------------------------------------
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
+OPENCODE_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 EXPORT_DIR = Path.home() / ".claude" / "token-usage"
+
 REGISTRY_FILENAME = "TOKEN_USAGE.md"
 LOG_MARKER_RE = re.compile(
     r"<!-- BEGIN:QUERY_LOG -->(.*?)<!-- END:QUERY_LOG -->", re.DOTALL
@@ -28,7 +37,9 @@ MAX_LOG_ENTRIES = 500
 SESSIONS_LIMIT = 50
 
 
-# ---------- transcript reading ---------------------------------------------
+# =========================================================================
+# Fuente 1: Claude Code (JSONL)
+# =========================================================================
 
 
 def iter_jsonl(path: Path):
@@ -43,7 +54,7 @@ def iter_jsonl(path: Path):
                 continue
 
 
-def collect_records():
+def collect_records_claude_code():
     if not PROJECTS_DIR.exists():
         return
     for project_dir in PROJECTS_DIR.iterdir():
@@ -56,6 +67,7 @@ def collect_records():
             records: list[dict] = []
             for rec in iter_jsonl(jsonl_path):
                 rec["_project"] = project_name
+                rec["_source"] = "claude-code"
                 uid = rec.get("uuid")
                 if uid:
                     uuid_parent[uid] = rec.get("parentUuid")
@@ -66,7 +78,7 @@ def collect_records():
                         if (
                             isinstance(block, dict)
                             and block.get("type") == "tool_use"
-                            and block.get("name") == "Task"
+                            and block.get("name") in ("Task", "Agent")
                         ):
                             sub = (block.get("input") or {}).get("subagent_type") or "general-purpose"
                             task_by_msg.setdefault(uid, []).append(sub)
@@ -87,6 +99,143 @@ def collect_records():
                 yield rec
 
 
+# =========================================================================
+# Fuente 2: opencode (SQLite)
+# =========================================================================
+
+
+def _opencode_connect():
+    if not OPENCODE_DB.exists():
+        return None
+    try:
+        uri = f"file:{OPENCODE_DB}?mode=ro&nolock=1&immutable=1"
+        return sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return None
+
+
+def opencode_session_map() -> dict[str, dict]:
+    """session_id -> {directory, title, parent_id, time_created, time_updated}."""
+    con = _opencode_connect()
+    if not con:
+        return {}
+    try:
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+        return {
+            row["id"]: dict(row)
+            for row in cur.execute(
+                "SELECT id, directory, title, parent_id, time_created, time_updated "
+                "FROM session"
+            )
+        }
+    finally:
+        con.close()
+
+
+def collect_records_opencode():
+    """Emite records en shape compatible con Claude Code (fake JSONL)."""
+    con = _opencode_connect()
+    if not con:
+        return
+    try:
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+
+        sessions = {}
+        for s in cur.execute(
+            "SELECT id, directory, title, parent_id, time_created "
+            "FROM session"
+        ):
+            sessions[s["id"]] = dict(s)
+
+        sql = (
+            "SELECT p.data AS part_data, p.time_created AS ts, "
+            "       p.session_id AS sid, p.message_id AS mid, "
+            "       m.data AS message_data "
+            "FROM part p JOIN message m ON p.message_id = m.id "
+            "WHERE p.data LIKE '%\"type\":\"step-finish\"%' "
+            "ORDER BY p.time_created"
+        )
+        for row in cur.execute(sql):
+            try:
+                part = json.loads(row["part_data"])
+                msg = json.loads(row["message_data"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if part.get("type") != "step-finish":
+                continue
+
+            tokens = part.get("tokens") or {}
+            cache = tokens.get("cache") or {}
+            cost = part.get("cost") or 0
+
+            session = sessions.get(row["sid"]) or {}
+            directory = session.get("directory") or ""
+
+            # opencode guarda el modelo distinto según rol:
+            #   user messages:      message.data.model = {providerID, modelID}
+            #   assistant messages: message.data.providerID / modelID al nivel raíz
+            model_nested = msg.get("model") or {}
+            provider = msg.get("providerID") or model_nested.get("providerID") or "?"
+            model_id = msg.get("modelID") or model_nested.get("modelID") or "?"
+            model_label = f"{provider}/{model_id}" if provider != "?" or model_id != "?" else "opencode/unknown"
+
+            agent = msg.get("agent") or "main"
+            if session.get("parent_id"):
+                agent = f"{agent}*"  # sub-agent marker
+
+            project_label = Path(directory).name if directory else "unknown"
+
+            ts_ms = row["ts"] or session.get("time_created")
+            ts_iso = (
+                datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+                if ts_ms
+                else None
+            )
+
+            yield {
+                "timestamp": ts_iso,
+                "sessionId": row["sid"],
+                "uuid": row["mid"],
+                "parentUuid": None,
+                "isSidechain": False,
+                "cwd": directory,
+                "type": "assistant",
+                "message": {
+                    "model": model_label,
+                    "usage": {
+                        "input_tokens": tokens.get("input", 0) or 0,
+                        "output_tokens": tokens.get("output", 0) or 0,
+                        "cache_creation_input_tokens": cache.get("write", 0) or 0,
+                        "cache_read_input_tokens": cache.get("read", 0) or 0,
+                        "_reasoning_tokens": tokens.get("reasoning", 0) or 0,
+                        "_cost_usd": float(cost),
+                    },
+                },
+                "_project": project_label,
+                "_subagent_type": agent,
+                "_source": "opencode",
+            }
+    finally:
+        con.close()
+
+
+# =========================================================================
+# Fuente unificada
+# =========================================================================
+
+
+def collect_records():
+    yield from collect_records_claude_code()
+    yield from collect_records_opencode()
+
+
+# =========================================================================
+# Utilidades compartidas
+# =========================================================================
+
+
 def record_usage(rec: dict):
     msg = rec.get("message") or {}
     usage = msg.get("usage") or {}
@@ -95,12 +244,15 @@ def record_usage(rec: dict):
     return {
         "timestamp": rec.get("timestamp"),
         "project": rec.get("_project"),
+        "source": rec.get("_source", "claude-code"),
         "model": msg.get("model", "unknown"),
         "subagent_type": rec.get("_subagent_type", "main"),
         "input_tokens": usage.get("input_tokens", 0) or 0,
         "output_tokens": usage.get("output_tokens", 0) or 0,
         "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0) or 0,
         "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0) or 0,
+        "reasoning_tokens": usage.get("_reasoning_tokens", 0) or 0,
+        "cost_usd": float(usage.get("_cost_usd", 0) or 0),
         "session_id": rec.get("sessionId"),
     }
 
@@ -115,8 +267,11 @@ def parse_ts(ts: str | None):
 
 
 def fmt_human(dt: datetime) -> str:
-    """Formato legible: '22/04/2026 10:45:01 AM' (fecha ES + reloj 12h)."""
     return dt.strftime("%d/%m/%Y %I:%M:%S %p")
+
+
+def fmt_cost(v: float) -> str:
+    return f"${v:.4f}"
 
 
 def extract_user_text(msg: dict) -> str | None:
@@ -166,6 +321,8 @@ def human_duration(start: datetime | None, end: datetime | None) -> str:
 def new_session():
     return {
         "title": None,
+        "source": None,
+        "parent_id": None,
         "first_ts": None,
         "last_ts": None,
         "tokens": new_bucket(),
@@ -190,11 +347,21 @@ def date_range(period: str):
     raise ValueError(f"unknown period: {period}")
 
 
-# ---------- aggregation -----------------------------------------------------
+# =========================================================================
+# Agregación
+# =========================================================================
 
 
 def new_bucket():
-    return {"input": 0, "output": 0, "cache_create": 0, "cache_read": 0, "messages": 0}
+    return {
+        "input": 0,
+        "output": 0,
+        "cache_create": 0,
+        "cache_read": 0,
+        "reasoning": 0,
+        "cost_usd": 0.0,
+        "messages": 0,
+    }
 
 
 def add_usage(bucket: dict, u: dict):
@@ -202,6 +369,8 @@ def add_usage(bucket: dict, u: dict):
     bucket["output"] += u["output_tokens"]
     bucket["cache_create"] += u["cache_creation_input_tokens"]
     bucket["cache_read"] += u["cache_read_input_tokens"]
+    bucket["reasoning"] += u.get("reasoning_tokens", 0)
+    bucket["cost_usd"] += u.get("cost_usd", 0.0)
     bucket["messages"] += 1
 
 
@@ -217,13 +386,9 @@ def compute(period: str, project_filter: str | None):
     for rec in collect_records():
         ts = parse_ts(rec.get("timestamp"))
         if not ts:
-            u = record_usage(rec)
-            if not u:
-                continue
-            ts = parse_ts(u["timestamp"])
-            if not ts:
-                continue
+            continue
         proj = rec.get("_project")
+        source = rec.get("_source", "claude-code")
 
         cwd = rec.get("cwd")
         if cwd:
@@ -236,12 +401,15 @@ def compute(period: str, project_filter: str | None):
         sid = rec.get("sessionId")
         if sid and matches_project:
             sess = sessions_per_project[proj].setdefault(sid, new_session())
+            if sess["source"] is None:
+                sess["source"] = source
             if sess["first_ts"] is None or ts < sess["first_ts"]:
                 sess["first_ts"] = ts
             if sess["last_ts"] is None or ts > sess["last_ts"]:
                 sess["last_ts"] = ts
 
-            if rec.get("type") == "user" and not rec.get("isSidechain"):
+            # Title / resets detection: solo para Claude Code (opencode se enriquece luego)
+            if source == "claude-code" and rec.get("type") == "user" and not rec.get("isSidechain"):
                 msg = rec.get("message") or {}
                 if not is_tool_result_message(msg):
                     cleaned = clean_title(extract_user_text(msg))
@@ -261,8 +429,8 @@ def compute(period: str, project_filter: str | None):
 
         if matches_project:
             date_key = ts.date().isoformat()
-            key = (u["model"], u["subagent_type"])
-            add_usage(all_time_per_project[proj][date_key][key], u)
+            group_key = (u["source"], u["model"], u["subagent_type"])
+            add_usage(all_time_per_project[proj][date_key][group_key], u)
 
         d = ts.date()
         if start and d < start:
@@ -272,9 +440,12 @@ def compute(period: str, project_filter: str | None):
         if not matches_project:
             continue
 
-        add_usage(per_day[d.isoformat()][(proj, u["model"], u["subagent_type"])], u)
+        add_usage(per_day[d.isoformat()][(proj, u["source"], u["model"], u["subagent_type"])], u)
         add_usage(totals, u)
         add_usage(per_project_filtered[proj], u)
+
+    # Enriquecemos sesiones de opencode con title / parent_id del DB
+    enrich_opencode_sessions(sessions_per_project)
 
     return {
         "per_day": per_day,
@@ -286,7 +457,28 @@ def compute(period: str, project_filter: str | None):
     }
 
 
-# ---------- reporting -------------------------------------------------------
+def enrich_opencode_sessions(sessions_per_project: dict) -> None:
+    """Completa title/parent_id para sesiones de opencode consultando la DB."""
+    meta = opencode_session_map()
+    if not meta:
+        return
+    for _, sessions in sessions_per_project.items():
+        for sid, sess in sessions.items():
+            if sess.get("source") != "opencode":
+                continue
+            m = meta.get(sid)
+            if not m:
+                continue
+            if not sess.get("title"):
+                title = (m.get("title") or "").strip()
+                if title:
+                    sess["title"] = title[:120]
+            sess["parent_id"] = m.get("parent_id")
+
+
+# =========================================================================
+# Reporte consola
+# =========================================================================
 
 
 def print_report(per_day, totals, period):
@@ -296,12 +488,13 @@ def print_report(per_day, totals, period):
     print()
     print(f"Uso de tokens - período: {period}")
     print(f"Generado:      {fmt_human(datetime.now())}")
-    print("=" * 138)
+    print("=" * 148)
     for date_key in sorted(per_day):
         print(f"\n--- {date_key} (UTC) ---")
         header = (
-            f"{'Proyecto':<42} {'Modelo':<22} {'Agente':<22} "
-            f"{'Input':>12} {'Output':>12} {'CacheCr':>12} {'CacheRd':>12} {'Msjs':>6}"
+            f"{'Proyecto':<34} {'Src':<5} {'Modelo':<24} {'Agente':<20} "
+            f"{'Input':>11} {'Output':>11} {'CacheCr':>11} {'CacheRd':>11} "
+            f"{'Msjs':>5} {'Costo':>10}"
         )
         print(header)
         print("-" * len(header))
@@ -309,24 +502,25 @@ def print_report(per_day, totals, period):
             per_day[date_key].items(),
             key=lambda x: -(x[1]["input"] + x[1]["output"] + x[1]["cache_create"]),
         )
-        for (proj, model, sub), b in rows:
+        for (proj, source, model, sub), b in rows:
+            src_short = "CC" if source == "claude-code" else "OC"
             print(
-                f"{(proj or '')[:42]:<42} "
-                f"{(model or '')[:22]:<22} "
-                f"{(sub or '')[:22]:<22} "
-                f"{b['input']:>12,} {b['output']:>12,} "
-                f"{b['cache_create']:>12,} {b['cache_read']:>12,} "
-                f"{b['messages']:>6,}"
+                f"{(proj or '')[:34]:<34} {src_short:<5} "
+                f"{(model or '')[:24]:<24} {(sub or '')[:20]:<20} "
+                f"{b['input']:>11,} {b['output']:>11,} "
+                f"{b['cache_create']:>11,} {b['cache_read']:>11,} "
+                f"{b['messages']:>5,} {fmt_cost(b['cost_usd']):>10}"
             )
     print()
-    print("=" * 138)
+    print("=" * 148)
     billed = totals["input"] + totals["output"] + totals["cache_create"]
     print(
         f"TOTAL  input={totals['input']:,}  output={totals['output']:,}  "
         f"cache_create={totals['cache_create']:,}  cache_read={totals['cache_read']:,}  "
-        f"mensajes={totals['messages']:,}"
+        f"reasoning={totals['reasoning']:,}  mensajes={totals['messages']:,}"
     )
     print(f"Tokens FACTURADOS (input + output + cache_create): {billed:,}")
+    print(f"Costo total estimado (opencode reporta USD; Claude Code = 0): {fmt_cost(totals['cost_usd'])}")
 
 
 def build_payload(per_day, totals, period):
@@ -338,15 +532,18 @@ def build_payload(per_day, totals, period):
             date_key: [
                 {
                     "project": p,
+                    "source": src,
                     "model": m,
                     "subagent_type": s,
                     "input_tokens": b["input"],
                     "output_tokens": b["output"],
                     "cache_creation_input_tokens": b["cache_create"],
                     "cache_read_input_tokens": b["cache_read"],
+                    "reasoning_tokens": b["reasoning"],
+                    "cost_usd": round(b["cost_usd"], 6),
                     "messages": b["messages"],
                 }
-                for (p, m, s), b in sorted(
+                for (p, src, m, s), b in sorted(
                     per_day[date_key].items(),
                     key=lambda x: -(x[1]["input"] + x[1]["output"] + x[1]["cache_create"]),
                 )
@@ -371,28 +568,31 @@ def export_json(per_day, totals, period):
     print(f"Resúmenes diarios -> {EXPORT_DIR}{Path('/').anchor or ''}daily-*.json")
 
 
-# ---------- per-project registry markdown -----------------------------------
+# =========================================================================
+# Registro markdown por proyecto
+# =========================================================================
 
 
 def format_daily_totals_md(project_daily: dict) -> str:
     if not project_daily:
         return "_Aún no hay datos de uso._"
     lines = [
-        "| Fecha (UTC) | Modelo | Agente | Input | Output | CacheCr | CacheRd | Msjs | Facturado |",
-        "|-------------|--------|--------|------:|-------:|--------:|--------:|-----:|----------:|",
+        "| Fecha (UTC) | Src | Modelo | Agente | Input | Output | CacheCr | CacheRd | Msjs | Facturado | Costo USD |",
+        "|-------------|-----|--------|--------|------:|-------:|--------:|--------:|-----:|----------:|----------:|",
     ]
     for date_key in sorted(project_daily.keys(), reverse=True):
         rows = sorted(
             project_daily[date_key].items(),
             key=lambda x: -(x[1]["input"] + x[1]["output"] + x[1]["cache_create"]),
         )
-        for (model, sub), b in rows:
+        for (source, model, sub), b in rows:
             billed = b["input"] + b["output"] + b["cache_create"]
+            src_short = "CC" if source == "claude-code" else "OC"
             lines.append(
-                f"| {date_key} | `{model}` | `{sub}` | "
+                f"| {date_key} | `{src_short}` | `{model}` | `{sub}` | "
                 f"{b['input']:,} | {b['output']:,} | "
                 f"{b['cache_create']:,} | {b['cache_read']:,} | "
-                f"{b['messages']:,} | {billed:,} |"
+                f"{b['messages']:,} | {billed:,} | {fmt_cost(b['cost_usd'])} |"
             )
     return "\n".join(lines)
 
@@ -406,19 +606,24 @@ def format_sessions_md(sessions: dict, limit: int = SESSIONS_LIMIT) -> str:
         reverse=True,
     )[:limit]
     lines = [
-        "| Sesión | Título | Inicio | Duración | Msjs | Facturado | Reinicios |",
-        "|--------|--------|--------|---------:|-----:|----------:|----------:|",
+        "| Sesión | Src | Título | Inicio | Duración | Msjs | Facturado | Costo USD | Reinicios |",
+        "|--------|-----|--------|--------|---------:|-----:|----------:|----------:|----------:|",
     ]
     for sid, s in items:
-        title = (s["title"] or "_(sin título detectado)_").replace("|", "\\|")
-        if len(title) > 80:
-            title = title[:77] + "..."
+        title_raw = s["title"] or "_(sin título detectado)_"
+        if s.get("parent_id"):
+            title_raw = "↳ " + title_raw
+        title = title_raw.replace("|", "\\|")
+        if len(title) > 70:
+            title = title[:67] + "..."
+        src = "CC" if s.get("source") == "claude-code" else "OC"
         inicio = fmt_human(s["first_ts"].astimezone()) if s["first_ts"] else ""
         dur = human_duration(s["first_ts"], s["last_ts"])
         billed = s["tokens"]["input"] + s["tokens"]["output"] + s["tokens"]["cache_create"]
+        cost = fmt_cost(s["tokens"]["cost_usd"])
         lines.append(
-            f"| `{sid[:8]}` | {title} | {inicio} | {dur} | "
-            f"{s['tokens']['messages']:,} | {billed:,} | {s['resets']} |"
+            f"| `{sid[:8]}` | `{src}` | {title} | {inicio} | {dur} | "
+            f"{s['tokens']['messages']:,} | {billed:,} | {cost} | {s['resets']} |"
         )
     return "\n".join(lines)
 
@@ -428,9 +633,10 @@ def format_log_entry(ts: str, period: str, project_filter: str | None, b: dict) 
     filt = f", filtro=`{project_filter}`" if project_filter else ""
     return (
         f"- **{ts}** — período=`{period}`{filt} — "
-        f"facturado=`{billed:,}` | input=`{b['input']:,}` | "
-        f"output=`{b['output']:,}` | cache_create=`{b['cache_create']:,}` | "
-        f"cache_read=`{b['cache_read']:,}` | mensajes=`{b['messages']:,}`"
+        f"facturado=`{billed:,}` | costo=`{fmt_cost(b['cost_usd'])}` | "
+        f"input=`{b['input']:,}` | output=`{b['output']:,}` | "
+        f"cache_create=`{b['cache_create']:,}` | cache_read=`{b['cache_read']:,}` | "
+        f"mensajes=`{b['messages']:,}`"
     )
 
 
@@ -452,6 +658,13 @@ def build_registry_content(
     now = fmt_human(datetime.now())
     t = lifetime_totals(project_daily)
     billed = t["input"] + t["output"] + t["cache_create"]
+    # Contar sesiones por source
+    sources_count = defaultdict(int)
+    for s in project_sessions.values():
+        sources_count[s.get("source") or "claude-code"] += 1
+    src_summary = " · ".join(
+        f"{k}={v}" for k, v in sorted(sources_count.items())
+    ) or "—"
     body = [
         f"# Registro de uso de tokens — `{project_name}`",
         "",
@@ -460,15 +673,18 @@ def build_registry_content(
         "> Todo lo que está entre los marcadores `<!-- BEGIN -->` / `<!-- END -->` se reescribe en cada corrida.",
         "> Las notas fuera de esos bloques se preservan — podés dejar comentarios ahí.",
         "",
-        "## Totales históricos",
+        "## Totales históricos (Claude Code + opencode)",
         "",
         f"- **Tokens facturados** (input + output + cache_create): `{billed:,}`",
+        f"- **Costo estimado**: `{fmt_cost(t['cost_usd'])}` "
+        f"_(opencode reporta USD; Claude Code suma 0 — agregar pricing por modelo es un TODO)_",
         f"- Input: `{t['input']:,}`",
         f"- Output: `{t['output']:,}`",
+        f"- Reasoning: `{t['reasoning']:,}`",
         f"- Creación de caché: `{t['cache_create']:,}`",
         f"- Lectura de caché: `{t['cache_read']:,}`",
         f"- Mensajes: `{t['messages']:,}`",
-        f"- Sesiones: `{len(project_sessions):,}`",
+        f"- Sesiones: `{len(project_sessions):,}` ({src_summary})",
         "",
         "## Desglose diario",
         "",
@@ -478,9 +694,10 @@ def build_registry_content(
         "",
         f"## Sesiones (últimas {SESSIONS_LIMIT})",
         "",
-        "> La columna **Reinicios** cuenta los mensajes de usuario con `parentUuid=null` después del primero.",
-        "> Es una heurística: si `/clear` deja ese rastro, lo detecta; si no, siempre va a mostrar `0`.",
-        "> La señal más fuerte de contexto optimizado es tener **muchas sesiones cortas con títulos claros** en vez de una sesión gigante.",
+        "> **Src**: `CC` = Claude Code, `OC` = opencode.",
+        "> **↳** indica sub-agente delegado (opencode usa `session.parent_id`).",
+        "> **Reinicios**: heurística de `parentUuid=null` en user messages — solo aplica a Claude Code.",
+        "> La señal más fuerte de contexto optimizado es **muchas sesiones cortas con títulos claros** en vez de una gigante.",
         "",
         "<!-- BEGIN:SESSIONS -->",
         format_sessions_md(project_sessions),
@@ -538,7 +755,62 @@ def update_registry_md(
     return md_path
 
 
-# ---------- main ------------------------------------------------------------
+# =========================================================================
+# main
+# =========================================================================
+
+
+def _project_cwd_matches(session_cwd: str, target_cwd: Path) -> bool:
+    if not session_cwd:
+        return False
+    try:
+        return Path(session_cwd).resolve() == target_cwd.resolve()
+    except (OSError, ValueError):
+        return False
+
+
+def group_projects_by_cwd(data: dict) -> dict[Path, dict]:
+    """Une proyectos que apuntan al mismo cwd (Claude Code + opencode).
+
+    Devuelve {resolved_cwd: {
+        'label': nombre legible,
+        'daily': {...},
+        'sessions': {...},
+        'totals': bucket filtered,
+    }}
+    """
+    grouped: dict[Path, dict] = {}
+    cwds = data["cwds"]
+    for proj, cwd_str in cwds.items():
+        if not cwd_str:
+            continue
+        try:
+            key = Path(cwd_str).resolve()
+        except (OSError, ValueError):
+            continue
+        entry = grouped.setdefault(
+            key,
+            {
+                "label": key.name,
+                "daily": defaultdict(lambda: defaultdict(new_bucket)),
+                "sessions": {},
+                "totals": new_bucket(),
+            },
+        )
+        # merge daily
+        for date_key, row_dict in data["all_time_per_project"].get(proj, {}).items():
+            for group_key, bucket in row_dict.items():
+                dest = entry["daily"][date_key][group_key]
+                for k in dest:
+                    dest[k] += bucket[k]
+        # merge sessions
+        entry["sessions"].update(data["sessions_per_project"].get(proj, {}))
+        # merge totals (filtered, already respects period)
+        src_totals = data["per_project_filtered"].get(proj)
+        if src_totals:
+            for k in entry["totals"]:
+                entry["totals"][k] += src_totals[k]
+    return grouped
 
 
 def main():
@@ -547,7 +819,9 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8")
     except (AttributeError, OSError):
         pass
-    parser = argparse.ArgumentParser(description="Agregador de uso de tokens de Claude Code")
+    parser = argparse.ArgumentParser(
+        description="Agregador unificado de uso de tokens (Claude Code + opencode)"
+    )
     parser.add_argument(
         "--period", "-p",
         default="today",
@@ -569,8 +843,12 @@ def main():
     )
     args = parser.parse_args()
 
-    if not PROJECTS_DIR.exists():
-        print(f"No se encontró el directorio de transcripciones en {PROJECTS_DIR}", file=sys.stderr)
+    if not PROJECTS_DIR.exists() and not OPENCODE_DB.exists():
+        print(
+            "No se encontraron datos ni de Claude Code (~/.claude/projects) "
+            "ni de opencode (~/.local/share/opencode/opencode.db)",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     data = compute(args.period, args.project)
@@ -588,22 +866,26 @@ def main():
     if args.no_registry:
         return
 
+    # Agrupamos por cwd real — un solo TOKEN_USAGE.md por proyecto físico,
+    # aunque haya datos de Claude Code Y opencode mezclados.
+    grouped = group_projects_by_cwd(data)
     ts_human = fmt_human(datetime.now())
     updated: list[Path] = []
     skipped: list[tuple[str, str]] = []
-    for proj, proj_totals in data["per_project_filtered"].items():
-        cwd = data["cwds"].get(proj)
-        if not cwd:
-            skipped.append((proj, "cwd desconocido en las transcripciones"))
+    for cwd_path, info in grouped.items():
+        if info["totals"]["messages"] == 0:
+            continue  # sin actividad en el período → no tocar su .md
+        if not cwd_path.exists() or not cwd_path.is_dir():
+            skipped.append((info["label"], f"cwd no existe en disco: {cwd_path}"))
             continue
-        daily = data["all_time_per_project"].get(proj, {})
-        project_sessions = data["sessions_per_project"].get(proj, {})
-        log_entry = format_log_entry(ts_human, args.period, args.project, proj_totals)
-        md_path = update_registry_md(cwd, proj, daily, project_sessions, log_entry)
+        log_entry = format_log_entry(ts_human, args.period, args.project, info["totals"])
+        md_path = update_registry_md(
+            str(cwd_path), info["label"], info["daily"], info["sessions"], log_entry
+        )
         if md_path:
             updated.append(md_path)
         else:
-            skipped.append((proj, f"cwd no existe en disco: {cwd}"))
+            skipped.append((info["label"], f"no se pudo escribir en {cwd_path}"))
 
     if not args.json:
         if updated:

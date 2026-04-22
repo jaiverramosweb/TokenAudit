@@ -1,16 +1,18 @@
 ---
 name: token-usage
 description: >
-  Aggregate daily Claude Code token usage from local JSONL transcripts and
-  keep a per-project TOKEN_USAGE.md registry that records every query.
-  Shows per-day, per-project, per-model, main-thread-vs-subagent breakdown
-  plus an optional JSON export for later calculations.
-  Trigger: when the user wants to check token usage, measure cost, see daily tokens,
-  asks "cuánto token usé", "cuánto gasté", "token usage", or types /token-usage.
+  Unified token usage aggregator: reads Claude Code transcripts (JSONL) AND
+  opencode database (SQLite) and produces a combined view per day, project,
+  model and sub-agent. Maintains a per-project TOKEN_USAGE.md registry with
+  lifetime totals, daily breakdown, session list (auto-detected titles),
+  USD cost (when the provider reports it) and append-only query log.
+  Trigger: when the user wants to check token usage, measure cost, see daily
+  tokens, asks "cuánto token usé", "cuánto gasté", "token usage", or types
+  /token-usage.
 license: MIT
 metadata:
   author: Jaiver Ramos
-  version: "1.2"
+  version: "2.0"
 ---
 
 ## When to Use
@@ -24,9 +26,21 @@ Invoke this skill when the user wants to:
 
 ## What It Reads
 
-Every Claude Code session writes a JSONL transcript under
-`~/.claude/projects/<project-hash>/*.jsonl`. Each line contains, among
-other things:
+**Two data sources**, merged transparently:
+
+1. **Claude Code** — JSONL transcripts at
+   `~/.claude/projects/<project-hash>/*.jsonl`.
+2. **opencode** — SQLite DB at `~/.local/share/opencode/opencode.db`
+   (opened read-only with `immutable=1` so no lock contention). Reads
+   tables `session`, `message`, `part`; tokens come from parts where
+   `data.type == "step-finish"`.
+
+If only one tool is installed, the other source is skipped silently. If
+the same cwd shows up from both tools, its `TOKEN_USAGE.md` contains a
+unified view (and the `Src` column — `CC`/`OC` — lets you tell which
+source produced each row).
+
+Each Claude Code JSONL line contains, among other things:
 
 - `timestamp` (UTC, ISO-8601)
 - `message.model` (e.g. `claude-opus-4-7`, `claude-sonnet-4-6`)

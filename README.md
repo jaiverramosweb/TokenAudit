@@ -15,16 +15,28 @@ caros, proyectos que escalan más rápido de lo esperado).
 
 ### `token-usage`
 
+- **Lee dos fuentes en paralelo** y las combina:
+  - **Claude Code** — JSONL en `~/.claude/projects/*/*.jsonl`
+  - **opencode** — SQLite en `~/.local/share/opencode/opencode.db`
+- Si solo tenés una de las dos herramientas instaladas, la otra se omite
+  silenciosamente.
 - Mide el consumo de tokens **por día**, **por proyecto**, **por modelo**
-  y **por tipo de sub-agente**.
-- Mantiene un `TOKEN_USAGE.md` dentro de cada proyecto con:
-  - Totales históricos (lifetime)
-  - Desglose diario
-  - Últimas 50 sesiones (título auto-detectado, duración, tokens)
+  y **por tipo de sub-agente**. Incluye **costo USD** cuando el
+  proveedor de opencode lo reporta.
+- Mantiene un `TOKEN_USAGE.md` dentro de cada proyecto (agrupado por el
+  `cwd` real — un mismo proyecto con datos de Claude Code **y** opencode
+  se unifica en un único `.md`) con:
+  - Totales históricos (lifetime) de ambas fuentes combinadas
+  - Desglose diario con columna `Src` (`CC`/`OC`) y `Costo USD`
+  - Últimas 50 sesiones (título auto-detectado, duración, tokens, costo).
+    Sub-agentes de opencode (`session.parent_id` distinto de null)
+    aparecen marcados con `↳`.
   - Historial de consultas append-only (máx. 500)
-- Registra un hook `PostToolUse` que, **después de cada delegación a un
-  sub-agente**, inyecta automáticamente los tokens que esa delegación
-  consumió en la respuesta del agente principal.
+- Registra un hook `PostToolUse` en Claude Code que, **después de cada
+  delegación a un sub-agente**, inyecta automáticamente los tokens que
+  esa delegación consumió en la respuesta del agente principal.
+  *(opencode tiene su propio modelo de sub-agentes — se captura por
+  lectura del DB, no necesita hook.)*
 
 ---
 
@@ -191,8 +203,9 @@ son tu historial. Si los querés borrar, hacelo a mano.
 
 ## Roadmap / cómo mapea al futuro
 
-Hoy TokenAudit funciona con **Claude Code**. La estructura del repo
-está pensada para escalar a otras herramientas sin romper nada:
+Hoy TokenAudit funciona con **Claude Code** y **opencode**. La
+estructura del repo está pensada para escalar a otras herramientas sin
+romper nada:
 
 ```
 TokenAudit/
@@ -209,12 +222,20 @@ TokenAudit/
 └── README.md
 ```
 
-Cuando venga el soporte para opencode u otros agentes, se agregará el
-adaptador correspondiente dentro de `adapters/` y el `install.sh`
-detectará automáticamente qué herramientas tenés instaladas y aplicará
-los artefactos correctos. Los datos (transcripts, sesiones, tokens) de
-cada herramienta van a un sub-archivo del `TOKEN_USAGE.md` del
-proyecto, así tenés una vista unificada.
+**Estado actual:** la skill `token-usage` ya lee Claude Code + opencode
+en un solo pase y los unifica en un único `TOKEN_USAGE.md` por proyecto.
+La carpeta `adapters/` existe en el roadmap para albergar futuros
+adaptadores (cursor, aider, etc.) cuando el esfuerzo lo justifique.
+
+**Próximos candidatos:**
+
+- **Cursor CLI / aider** — si exponen transcripts locales, es el mismo
+  patrón que opencode: un módulo nuevo `collect_records_<tool>` que
+  traduce al formato interno unificado.
+- **Pricing por modelo** — para computar costo USD de Claude Code (hoy
+  opencode reporta el costo nativo cuando el provider lo expone; Claude
+  Code no lo reporta, así que queda en `$0` hasta que sumemos una tabla
+  de precios por modelo).
 
 Si querés contribuir un adaptador, abrí un issue con el formato de
 transcripts de la herramienta y armamos juntos el esqueleto.
