@@ -51,76 +51,122 @@ caros, proyectos que escalan más rápido de lo esperado).
 
 ## Instalación
 
-TokenAudit soporta **dos modos de instalación**. Elegí según cómo lo
-quieras usar.
+Dos **modos** posibles:
 
-### Modo 1 — **Local (global al usuario)** [recomendado]
+- **Local** (global al usuario, en `~/.claude/`) — aplica a **todos** tus
+  proyectos. Es el recomendado para uso personal.
+- **Por proyecto** (scoped, en `./.claude/`) — aplica solo al proyecto
+  donde estés parado.
 
-Instala la skill y el hook a nivel usuario. Aplica a **todos** los
-proyectos que abras con Claude Code en ese ordenador.
+Y dos **formas** de ejecutar el install (elegí la que prefieras):
+
+### Forma A — Una sola línea con `curl` [la más simple]
+
+Si confiás en correr scripts remotos (ver [aviso de seguridad](#seguridad-curl--bash)):
+
+**Modo local:**
 
 ```bash
-git clone <url-del-repo> TokenAudit
-cd TokenAudit
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/<TU-USUARIO>/TokenAudit/main/bootstrap.sh | bash
 ```
 
-Qué toca:
+**Modo proyecto** (parate primero en el proyecto):
+
+```bash
+cd /ruta/a/tu/proyecto
+curl -fsSL https://raw.githubusercontent.com/<TU-USUARIO>/TokenAudit/main/bootstrap.sh | bash -s -- --project
+```
+
+El `bootstrap.sh`:
+
+1. Clona el repo a `~/TokenAudit/` (si ya existe, hace `git pull --ff-only`).
+2. Ejecuta `install.sh` pasándole los argumentos que le diste (ej `--project`).
+
+**Overrides útiles** (variables de entorno antes del `bash`):
+
+| Variable | Default | Qué hace |
+|----------|---------|----------|
+| `TOKENAUDIT_REPO` | la del `bootstrap.sh` | Usar otro repo (útil para forks) |
+| `TOKENAUDIT_BRANCH` | `main` | Usar otra rama |
+| `TOKENAUDIT_DIR` | `~/TokenAudit` | Clonar en otra carpeta |
+
+Ejemplo:
+
+```bash
+TOKENAUDIT_BRANCH=dev curl -fsSL https://.../bootstrap.sh | bash
+```
+
+### Forma B — Clone manual [la transparente]
+
+Si preferís ver todo lo que estás instalando antes de ejecutarlo:
+
+```bash
+git clone https://github.com/<TU-USUARIO>/TokenAudit.git ~/TokenAudit
+cd ~/TokenAudit
+./install.sh               # modo local
+# o
+./install.sh --project     # modo proyecto (parate primero en el proyecto)
+```
+
+### Qué toca cada modo
+
+**Modo local:**
 
 | Ruta | Qué se escribe |
 |------|----------------|
 | `~/.claude/skills/token-usage/` | Los 3 archivos de la skill |
 | `~/.claude/settings.json` | Se **agrega** (merge, no pisa) el hook `PostToolUse` |
 
-Después, **cerrá y volvé a abrir Claude Code** para que cargue el hook.
-
-### Modo 2 — **Por proyecto** (scoped)
-
-Instala la skill y el hook dentro del proyecto donde estés parado.
-Aplica **solo a ese proyecto**. Ideal si un proyecto tiene políticas
-distintas o si el equipo quiere activar TokenAudit caso por caso.
-
-```bash
-# 1) Cloná el repo donde quieras (una sola vez)
-git clone <url-del-repo> ~/TokenAudit
-
-# 2) Parate en el proyecto donde lo querés activar
-cd /ruta/a/tu/proyecto
-
-# 3) Ejecutá el install apuntando al script del repo clonado
-~/TokenAudit/install.sh --project
-```
-
-Qué toca (relativo al proyecto actual):
+**Modo proyecto** (relativo al proyecto actual):
 
 | Ruta | Qué se escribe |
 |------|----------------|
 | `<tu-proyecto>/.claude/skills/token-usage/` | Los 3 archivos de la skill |
 | `<tu-proyecto>/.claude/settings.json` | Se agrega el hook `PostToolUse` |
 
-El hook usa `${CLAUDE_PROJECT_DIR}` para resolver la ruta, así que si
-movés el proyecto de carpeta, sigue funcionando sin reinstalar.
+El hook en modo proyecto usa `${CLAUDE_PROJECT_DIR}` para resolver la
+ruta, así que si movés el proyecto de carpeta, sigue funcionando sin
+reinstalar.
 
-**Decisión importante sobre `.claude/` en el proyecto:**
+**Decisión importante sobre `.claude/` en un proyecto:**
 
 - Si querés que **todo el equipo** que clone ese proyecto use
   TokenAudit automáticamente → **commiteá** la carpeta `.claude/`.
 - Si es solo para vos → **agregá `.claude/` al `.gitignore`** del
   proyecto.
 
-### ¿Cuál modo uso?
+### Después de instalar
+
+**Cerrá y volvé a abrir Claude Code** para que cargue el hook nuevo
+(los hooks se leen al iniciar la sesión, no en caliente).
+
+### ¿Qué modo uso?
 
 | Caso | Modo |
 |------|------|
-| Tu ordenador personal, querés medir todo lo que hacés | **Local** |
-| Equipo grande, algunos proyectos sí, otros no | **Proyecto** |
-| Querés que todo el equipo tenga TokenAudit al clonar un repo específico | **Proyecto** (y commiteá `.claude/`) |
+| Tu ordenador personal, querés medir todo | **Local** |
+| Equipo grande, algunos proyectos sí otros no | **Proyecto** |
+| Querés que todo el equipo tenga TokenAudit al clonar el repo de un proyecto | **Proyecto** + commitear `.claude/` |
 | No estás seguro | **Local** — es el default y el más simple |
 
 ### Idempotencia
 
-Los scripts son idempotentes: correrlos dos veces no duplica nada. Si ya
-existía el hook, lo **actualiza** en lugar de agregar uno nuevo.
+Tanto `install.sh` como `bootstrap.sh` son **idempotentes**: correrlos
+dos veces no duplica nada. Si ya existía el hook, lo **actualiza** en
+lugar de agregar uno nuevo.
+
+### Seguridad (`curl | bash`)
+
+Ejecutar un script remoto directamente vía `curl | bash` significa
+correr código sin haberlo leído. Para equipos internos con acceso al
+repo, la confianza ya existe. Si publicás TokenAudit afuera, recomendá
+esta variante a los paranoicos:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<TU-USUARIO>/TokenAudit/main/bootstrap.sh -o bootstrap.sh
+less bootstrap.sh     # revisá el contenido
+bash bootstrap.sh     # ahora sí
+```
 
 ---
 
@@ -174,13 +220,23 @@ persistente: vive en el proyecto, crece con el tiempo y tiene:
 
 ## Actualizar TokenAudit
 
+**Con el one-liner** (equivalente a reinstalar — el `bootstrap.sh` hace
+`git pull --ff-only` si el repo ya existe):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<TU-USUARIO>/TokenAudit/main/bootstrap.sh | bash
+```
+
+**Manualmente:**
+
 ```bash
 cd ~/TokenAudit
 git pull
 ./install.sh              # o --project si esa fue tu instalación
 ```
 
-Después, reiniciá Claude Code.
+Después de cualquier update, **reiniciá Claude Code** para que tome los
+cambios del hook.
 
 ---
 
@@ -283,3 +339,52 @@ Los mensajes a stderr aparecen en el transcript de Claude Code.
 ## Licencia
 
 MIT — usá, forkea, modificá. Si mejorás algo, mandá PR.
+
+---
+
+## Setup inicial (solo para el que publica el repo)
+
+Si sos quien va a publicar TokenAudit por primera vez en GitHub/GitLab:
+
+1. **Creá el repo vacío** en tu org (sin README auto-generado).
+
+2. **Editá `bootstrap.sh`** y reemplazá el placeholder:
+
+   ```bash
+   # antes
+   DEFAULT_REPO="https://github.com/CHANGEME/TokenAudit.git"
+   # después
+   DEFAULT_REPO="https://github.com/tu-usuario/TokenAudit.git"
+   ```
+
+3. **Editá este README** y reemplazá todas las ocurrencias de
+   `<TU-USUARIO>` por tu usuario/org real (hay varias en las secciones
+   de instalación y actualización).
+
+4. **Primer push:**
+
+   ```bash
+   cd ~/TokenAudit
+   git add .
+   git commit -m "feat: TokenAudit v2 con soporte Claude Code + opencode"
+   git branch -M main
+   git remote add origin https://github.com/tu-usuario/TokenAudit.git
+   git push -u origin main
+   ```
+
+5. **Probá el one-liner vos mismo** antes de compartirlo con el equipo:
+
+   ```bash
+   # Borrá tu instalación local primero para simular fresh install
+   rm -rf ~/TokenAudit
+   curl -fsSL https://raw.githubusercontent.com/tu-usuario/TokenAudit/main/bootstrap.sh | bash
+   ```
+
+6. **Compartí al equipo** con la línea documentada arriba — los mismos
+   overrides (`TOKENAUDIT_BRANCH`, etc.) les sirven si necesitan tunear
+   algo.
+
+> **Si el repo es privado**, el `curl` necesita auth. Las opciones son:
+> (a) hacer el repo público, (b) usar `gh repo clone` + correr
+> `install.sh` manualmente, o (c) que el equipo configure credenciales
+> git antes del `curl`.
