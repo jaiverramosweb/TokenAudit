@@ -17,11 +17,7 @@
 
 set -euo pipefail
 
-# ==============================================================================
-# EDITÁ ESTA URL antes del primer push a GitHub — apuntala a tu repo real.
-# ==============================================================================
-DEFAULT_REPO="https://github.com/CHANGEME/TokenAudit.git"
-# ==============================================================================
+DEFAULT_REPO="https://github.com/jaiverramosweb/TokenAudit.git"
 
 REPO_URL="${TOKENAUDIT_REPO:-$DEFAULT_REPO}"
 BRANCH="${TOKENAUDIT_BRANCH:-main}"
@@ -37,13 +33,6 @@ command -v git >/dev/null 2>&1 || {
     printf "ERROR: git no está en el PATH. Instalalo y volvé a intentar.\n" >&2
     exit 1
 }
-
-if [[ "$REPO_URL" == *CHANGEME* ]]; then
-    printf "ERROR: bootstrap.sh todavía tiene la URL del repo sin configurar (CHANGEME).\n" >&2
-    printf "       Editá bootstrap.sh y reemplazá la URL por la tuya, o\n" >&2
-    printf "       pasá TOKENAUDIT_REPO=<url> como variable de entorno.\n" >&2
-    exit 1
-fi
 
 # ---- clonar o actualizar -----------------------------------------------------
 if [ -d "$TARGET_DIR/.git" ]; then

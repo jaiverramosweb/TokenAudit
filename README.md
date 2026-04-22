@@ -67,14 +67,14 @@ Si confiás en correr scripts remotos (ver [aviso de seguridad](#seguridad-curl-
 **Modo local:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<TU-USUARIO>/TokenAudit/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh | bash
 ```
 
 **Modo proyecto** (parate primero en el proyecto):
 
 ```bash
 cd /ruta/a/tu/proyecto
-curl -fsSL https://raw.githubusercontent.com/<TU-USUARIO>/TokenAudit/main/bootstrap.sh | bash -s -- --project
+curl -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh | bash -s -- --project
 ```
 
 El `bootstrap.sh`:
@@ -101,7 +101,7 @@ TOKENAUDIT_BRANCH=dev curl -fsSL https://.../bootstrap.sh | bash
 Si preferís ver todo lo que estás instalando antes de ejecutarlo:
 
 ```bash
-git clone https://github.com/<TU-USUARIO>/TokenAudit.git ~/TokenAudit
+git clone https://github.com/jaiverramosweb/TokenAudit.git ~/TokenAudit
 cd ~/TokenAudit
 ./install.sh               # modo local
 # o
@@ -163,7 +163,7 @@ repo, la confianza ya existe. Si publicás TokenAudit afuera, recomendá
 esta variante a los paranoicos:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<TU-USUARIO>/TokenAudit/main/bootstrap.sh -o bootstrap.sh
+curl -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh -o bootstrap.sh
 less bootstrap.sh     # revisá el contenido
 bash bootstrap.sh     # ahora sí
 ```
@@ -224,7 +224,7 @@ persistente: vive en el proyecto, crece con el tiempo y tiene:
 `git pull --ff-only` si el repo ya existe):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<TU-USUARIO>/TokenAudit/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jaiverramosweb/TokenAudit/main/bootstrap.sh | bash
 ```
 
 **Manualmente:**
@@ -342,49 +342,15 @@ MIT — usá, forkea, modificá. Si mejorás algo, mandá PR.
 
 ---
 
-## Setup inicial (solo para el que publica el repo)
+## Forkear TokenAudit (para tu propio repo)
 
-Si sos quien va a publicar TokenAudit por primera vez en GitHub/GitLab:
+Si querés mantener tu propia variante:
 
-1. **Creá el repo vacío** en tu org (sin README auto-generado).
+1. Forkeá o cloneá el repo.
+2. Editá `bootstrap.sh`: cambiá `DEFAULT_REPO` por la URL de tu fork.
+3. Editá este README: reemplazá `jaiverramosweb` por tu usuario.
+4. Commit + push a tu fork.
 
-2. **Editá `bootstrap.sh`** y reemplazá el placeholder:
-
-   ```bash
-   # antes
-   DEFAULT_REPO="https://github.com/CHANGEME/TokenAudit.git"
-   # después
-   DEFAULT_REPO="https://github.com/tu-usuario/TokenAudit.git"
-   ```
-
-3. **Editá este README** y reemplazá todas las ocurrencias de
-   `<TU-USUARIO>` por tu usuario/org real (hay varias en las secciones
-   de instalación y actualización).
-
-4. **Primer push:**
-
-   ```bash
-   cd ~/TokenAudit
-   git add .
-   git commit -m "feat: TokenAudit v2 con soporte Claude Code + opencode"
-   git branch -M main
-   git remote add origin https://github.com/tu-usuario/TokenAudit.git
-   git push -u origin main
-   ```
-
-5. **Probá el one-liner vos mismo** antes de compartirlo con el equipo:
-
-   ```bash
-   # Borrá tu instalación local primero para simular fresh install
-   rm -rf ~/TokenAudit
-   curl -fsSL https://raw.githubusercontent.com/tu-usuario/TokenAudit/main/bootstrap.sh | bash
-   ```
-
-6. **Compartí al equipo** con la línea documentada arriba — los mismos
-   overrides (`TOKENAUDIT_BRANCH`, etc.) les sirven si necesitan tunear
-   algo.
-
-> **Si el repo es privado**, el `curl` necesita auth. Las opciones son:
-> (a) hacer el repo público, (b) usar `gh repo clone` + correr
-> `install.sh` manualmente, o (c) que el equipo configure credenciales
-> git antes del `curl`.
+Si tu fork es **privado**, el `curl | bash` requiere auth. Alternativas:
+(a) hacer el repo público, (b) `gh repo clone` + `./install.sh`
+manualmente, o (c) configurar credenciales git antes del `curl`.
