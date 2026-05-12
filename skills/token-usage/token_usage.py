@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import re
 import sqlite3
 import sys
@@ -29,10 +31,18 @@ OPENCODE_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 EXPORT_DIR = Path.home() / ".claude" / "token-usage"
 
 REGISTRY_FILENAME = "TOKEN_USAGE.md"
+STATE_FILENAME = ".token_usage_state.json"
 LOG_MARKER_RE = re.compile(
     r"<!-- BEGIN:QUERY_LOG -->(.*?)<!-- END:QUERY_LOG -->", re.DOTALL
 )
 SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
+LOCAL_COMMAND_CAVEAT_RE = re.compile(r"<local-command-caveat>.*?</local-command-caveat>", re.DOTALL)
+COMMAND_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
+COMMAND_MESSAGE_RE = re.compile(r"<command-message>(.*?)</command-message>", re.DOTALL)
+XML_TAG_RE = re.compile(r"</?[^>]+>")
+LOG_HEADER_RE = re.compile(r"^- \*\*(?P<ts>.*?)\*\* — (?P<body>.*)$")
+MARKER_BLOCK_TEMPLATE = "<!-- BEGIN:{marker} -->(.*?)<!-- END:{marker} -->"
+MACHINE_SNAPSHOTS_MARKER = "MACHINE_SNAPSHOTS"
 MAX_LOG_ENTRIES = 500
 SESSIONS_LIMIT = 50
 
@@ -54,6 +64,19 @@ def iter_jsonl(path: Path):
                 continue
 
 
+def project_name_from_cwd(cwd: str | None, fallback: str | None = None) -> str:
+    if cwd:
+        try:
+            name = Path(cwd).resolve().name
+            if name:
+                return name
+        except (OSError, ValueError):
+            name = Path(cwd).name
+            if name:
+                return name
+    return fallback or "unknown"
+
+
 def collect_records_claude_code():
     if not PROJECTS_DIR.exists():
         return
@@ -66,7 +89,7 @@ def collect_records_claude_code():
             uuid_parent: dict[str, str | None] = {}
             records: list[dict] = []
             for rec in iter_jsonl(jsonl_path):
-                rec["_project"] = project_name
+                rec["_project"] = project_name_from_cwd(rec.get("cwd"), project_name)
                 rec["_source"] = "claude-code"
                 uid = rec.get("uuid")
                 if uid:
@@ -185,7 +208,7 @@ def collect_records_opencode():
             if session.get("parent_id"):
                 agent = f"{agent}*"  # sub-agent marker
 
-            project_label = Path(directory).name if directory else "unknown"
+            project_label = project_name_from_cwd(directory, "unknown")
 
             ts_ms = row["ts"] or session.get("time_created")
             ts_iso = (
@@ -274,6 +297,96 @@ def fmt_cost(v: float) -> str:
     return f"${v:.4f}"
 
 
+def current_machine_id() -> str:
+    raw = (
+        os.environ.get("TOKEN_USAGE_MACHINE_ID")
+        or os.environ.get("COMPUTERNAME")
+        or os.environ.get("HOSTNAME")
+        or platform.node()
+        or "unknown-machine"
+    )
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", raw.strip())
+    return normalized or "unknown-machine"
+
+
+def marker_block_re(marker: str):
+    return re.compile(MARKER_BLOCK_TEMPLATE.format(marker=re.escape(marker)), re.DOTALL)
+
+
+def extract_marker_block(text: str, marker: str) -> str | None:
+    m = marker_block_re(marker).search(text)
+    if not m:
+        return None
+    return m.group(1).strip()
+
+
+def remove_marker_block(text: str, marker: str) -> str:
+    begin = f"<!-- BEGIN:{marker} -->"
+    end = f"<!-- END:{marker} -->"
+    pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", re.DOTALL)
+    return pattern.sub("", text).rstrip() + "\n"
+
+
+def ensure_marker_block(text: str, marker: str, replacement: str) -> str:
+    begin = f"<!-- BEGIN:{marker} -->"
+    end = f"<!-- END:{marker} -->"
+    pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
+    block = f"{begin}\n{replacement}\n{end}"
+    if pattern.search(text):
+        return pattern.sub(block, text)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + ("\n" if text else "") + block + "\n"
+
+
+def parse_int_cell(cell: str) -> int:
+    cleaned = cell.replace("`", "").replace("$", "").replace(",", "").strip()
+    cleaned = cleaned.replace("**", "")
+    if not cleaned or cleaned in {"—", "_Aún no hay datos de uso._", "_(sin título detectado)_"}:
+        return 0
+    try:
+        return int(float(cleaned))
+    except ValueError:
+        return 0
+
+
+def parse_float_cell(cell: str) -> float:
+    cleaned = cell.replace("`", "").replace("$", "").replace(",", "").strip()
+    cleaned = cleaned.replace("**", "")
+    if not cleaned or cleaned == "—":
+        return 0.0
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
+def parse_md_table_rows(block: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if not (line.startswith("|") and line.endswith("|")):
+            continue
+        if set(line.replace("|", "").replace(":", "").replace("-", "").strip()) == set():
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if not cells or cells[0].startswith("Fecha ") or cells[0].startswith("Sesión"):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def parse_human_dt(value: str) -> datetime | None:
+    raw = value.strip()
+    if not raw or raw == "—":
+        return None
+    try:
+        local_tz = datetime.now().astimezone().tzinfo
+        return datetime.strptime(raw, "%d/%m/%Y %I:%M:%S %p").replace(tzinfo=local_tz)
+    except ValueError:
+        return None
+
+
 def extract_user_text(msg: dict) -> str | None:
     content = msg.get("content")
     if isinstance(content, str):
@@ -301,6 +414,25 @@ def clean_title(text: str | None) -> str | None:
     if not text:
         return None
     cleaned = SYSTEM_REMINDER_RE.sub("", text).strip()
+    if not cleaned:
+        return None
+
+    if LOCAL_COMMAND_CAVEAT_RE.search(cleaned):
+        return None
+
+    command_name = COMMAND_NAME_RE.search(cleaned)
+    if command_name:
+        command = command_name.group(1).strip()
+        if command:
+            return f"Comando {command}"
+
+    command_message = COMMAND_MESSAGE_RE.search(cleaned)
+    if command_message:
+        command = command_message.group(1).strip()
+        if command:
+            return f"Comando {command}"
+
+    cleaned = XML_TAG_RE.sub(" ", cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned or None
 
@@ -606,8 +738,8 @@ def format_sessions_md(sessions: dict, limit: int = SESSIONS_LIMIT) -> str:
         reverse=True,
     )[:limit]
     lines = [
-        "| Sesión | Src | Título | Inicio | Duración | Msjs | Facturado | Costo USD | Reinicios |",
-        "|--------|-----|--------|--------|---------:|-----:|----------:|----------:|----------:|",
+        "| Sesión | Máquina | Src | Título | Inicio | Duración | Msjs | Facturado | Costo USD | Reinicios |",
+        "|--------|---------|-----|--------|--------|---------:|-----:|----------:|----------:|----------:|",
     ]
     for sid, s in items:
         title_raw = s["title"] or "_(sin título detectado)_"
@@ -617,12 +749,14 @@ def format_sessions_md(sessions: dict, limit: int = SESSIONS_LIMIT) -> str:
         if len(title) > 70:
             title = title[:67] + "..."
         src = "CC" if s.get("source") == "claude-code" else "OC"
+        machine = (s.get("machine_id") or "local").replace("|", "\\|")
+        display_id = s.get("display_id") or sid[:8]
         inicio = fmt_human(s["first_ts"].astimezone()) if s["first_ts"] else ""
         dur = human_duration(s["first_ts"], s["last_ts"])
         billed = s["tokens"]["input"] + s["tokens"]["output"] + s["tokens"]["cache_create"]
         cost = fmt_cost(s["tokens"]["cost_usd"])
         lines.append(
-            f"| `{sid[:8]}` | `{src}` | {title} | {inicio} | {dur} | "
+            f"| `{display_id}` | `{machine}` | `{src}` | {title} | {inicio} | {dur} | "
             f"{s['tokens']['messages']:,} | {billed:,} | {cost} | {s['resets']} |"
         )
     return "\n".join(lines)
@@ -640,6 +774,112 @@ def format_log_entry(ts: str, period: str, project_filter: str | None, b: dict) 
     )
 
 
+def parse_log_entry(line: str) -> dict | None:
+    raw = line.strip()
+    if not raw:
+        return None
+    m = LOG_HEADER_RE.match(raw)
+    if not m:
+        return None
+    body = m.group("body")
+    entry = {
+        "timestamp": m.group("ts").strip(),
+        "period": "—",
+        "project_filter": "*",
+        "billed": 0,
+        "cost": "$0.0000",
+        "input": 0,
+        "output": 0,
+        "cache_create": 0,
+        "cache_read": 0,
+        "messages": 0,
+    }
+
+    period_match = re.search(r"per[ií]odo=`([^`]*)`", body)
+    if not period_match:
+        period_match = re.search(r"period=`([^`]*)`", body)
+    if period_match:
+        entry["period"] = period_match.group(1)
+
+    filter_match = re.search(r"filtro=`([^`]*)`", body)
+    if filter_match:
+        entry["project_filter"] = filter_match.group(1)
+
+    field_patterns = {
+        "billed": r"(?:facturado|billed)=`?([^`|]+)`?",
+        "cost": r"(?:costo)=`?([^`|]+)`?",
+        "input": r"input=`?([^`|]+)`?",
+        "output": r"output=`?([^`|]+)`?",
+        "cache_create": r"cache_create=`?([^`|]+)`?",
+        "cache_read": r"cache_read=`?([^`|]+)`?",
+        "messages": r"(?:mensajes|messages)=`?([^`|]+)`?",
+    }
+    for field, pattern in field_patterns.items():
+        field_match = re.search(pattern, body)
+        if not field_match:
+            continue
+        value = field_match.group(1).strip()
+        if field == "cost":
+            entry[field] = value if value.startswith("$") else f"${value}"
+        else:
+            entry[field] = parse_int_cell(value)
+    return entry
+
+
+def format_query_log_md(log_entries: list[str]) -> str:
+    parsed = [entry for entry in (parse_log_entry(line) for line in log_entries) if entry]
+    if not parsed:
+        return "_Aún no hay consultas._"
+    lines = [
+        "| Fecha y hora | Período | Filtro | Facturado | Costo | Input | Output | CacheCr | CacheRd | Msjs |",
+        "|--------------|---------|--------|----------:|------:|------:|-------:|--------:|--------:|-----:|",
+    ]
+    for entry in parsed[-MAX_LOG_ENTRIES:]:
+        lines.append(
+            f"| {entry['timestamp']} | `{entry['period']}` | `{entry['project_filter']}` | {entry['billed']:,} | {entry['cost']} | {entry['input']:,} | {entry['output']:,} | {entry['cache_create']:,} | {entry['cache_read']:,} | {entry['messages']:,} |"
+        )
+    return "\n".join(lines)
+
+
+def executive_summary(project_daily: dict, project_sessions: dict) -> list[str]:
+    totals_by_day = []
+    totals_by_model = defaultdict(new_bucket)
+    totals_by_agent = defaultdict(new_bucket)
+
+    for date_key, rows in project_daily.items():
+        day_bucket = new_bucket()
+        for (_, model, agent), bucket in rows.items():
+            for k in day_bucket:
+                day_bucket[k] += bucket[k]
+            for k in totals_by_model[model]:
+                totals_by_model[model][k] += bucket[k]
+            for k in totals_by_agent[agent]:
+                totals_by_agent[agent][k] += bucket[k]
+        totals_by_day.append((date_key, day_bucket))
+
+    def billed(bucket: dict) -> int:
+        return bucket["input"] + bucket["output"] + bucket["cache_create"]
+
+    top_day = max(totals_by_day, key=lambda item: billed(item[1]), default=None)
+    top_model = max(totals_by_model.items(), key=lambda item: billed(item[1]), default=None)
+    top_agent = max(totals_by_agent.items(), key=lambda item: billed(item[1]), default=None)
+    session_billed = []
+    for session in project_sessions.values():
+        session_bucket = session.get("tokens") or new_bucket()
+        session_billed.append(billed(session_bucket))
+    avg_session = sum(session_billed) / len(session_billed) if session_billed else 0
+
+    summary = []
+    if top_day:
+        summary.append(f"- Día con mayor consumo: **{top_day[0]}** con **{billed(top_day[1]):,}** tokens facturados.")
+    if top_model:
+        summary.append(f"- Modelo más usado: **{top_model[0]}** con **{billed(top_model[1]):,}** tokens facturados.")
+    if top_agent:
+        summary.append(f"- Agente con mayor consumo: **{top_agent[0]}** con **{billed(top_agent[1]):,}** tokens facturados.")
+    summary.append(f"- Promedio por sesión: **{avg_session:,.0f}** tokens facturados en **{len(project_sessions):,}** sesiones.")
+    return summary
+
+
 def lifetime_totals(project_daily: dict) -> dict:
     t = new_bucket()
     for _, rows in project_daily.items():
@@ -647,6 +887,198 @@ def lifetime_totals(project_daily: dict) -> dict:
             for k in t:
                 t[k] += b[k]
     return t
+
+
+def serialize_project_daily(project_daily: dict) -> list[dict]:
+    rows = []
+    for date_key, entries in project_daily.items():
+        for (source, model, sub), bucket in entries.items():
+            rows.append(
+                {
+                    "date": date_key,
+                    "source": source,
+                    "model": model,
+                    "subagent_type": sub,
+                    **bucket,
+                }
+            )
+    rows.sort(key=lambda row: (row["date"], row["source"], row["model"], row["subagent_type"]))
+    return rows
+
+
+def serialize_project_sessions(project_sessions: dict) -> list[dict]:
+    rows = []
+    for sid, session in project_sessions.items():
+        rows.append(
+            {
+                "session_id": sid,
+                "title": session.get("title"),
+                "source": session.get("source"),
+                "parent_id": session.get("parent_id"),
+                "first_ts": session.get("first_ts").isoformat() if session.get("first_ts") else None,
+                "last_ts": session.get("last_ts").isoformat() if session.get("last_ts") else None,
+                "tokens": dict(session.get("tokens") or new_bucket()),
+                "resets": session.get("resets", 0),
+                "user_msg_count": session.get("user_msg_count", 0),
+            }
+        )
+    rows.sort(key=lambda row: row.get("last_ts") or "", reverse=True)
+    return rows
+
+
+def build_machine_snapshot(project_daily: dict, project_sessions: dict) -> dict:
+    return {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "daily": serialize_project_daily(project_daily),
+        "sessions": serialize_project_sessions(project_sessions),
+    }
+
+
+def snapshot_session_ids(snapshot: dict) -> set[str]:
+    return {
+        row.get("session_id")
+        for row in snapshot.get("sessions", [])
+        if row.get("session_id")
+    }
+
+
+def snapshot_session_short_ids(snapshot: dict) -> set[str]:
+    return {
+        str(row.get("session_id"))[:8]
+        for row in snapshot.get("sessions", [])
+        if row.get("session_id")
+    }
+
+
+def load_machine_snapshots(existing: str) -> dict:
+    raw = extract_marker_block(existing, MACHINE_SNAPSHOTS_MARKER)
+    if not raw:
+        return {"schema_version": 1, "machines": {}}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"schema_version": 1, "machines": {}}
+    machines = data.get("machines")
+    if not isinstance(machines, dict):
+        machines = {}
+    return {"schema_version": 1, "machines": machines}
+
+
+def load_machine_snapshots_from_sidecar(state_path: Path) -> dict | None:
+    if not state_path.exists():
+        return None
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    machines = data.get("machines")
+    if not isinstance(machines, dict):
+        machines = {}
+    return {"schema_version": 1, "machines": machines}
+
+
+def import_legacy_registry(existing: str) -> dict | None:
+    daily_block = extract_marker_block(existing, "DAILY_TOTALS")
+    sessions_block = extract_marker_block(existing, "SESSIONS")
+    if not daily_block and not sessions_block:
+        return None
+
+    imported_daily = defaultdict(lambda: defaultdict(new_bucket))
+    if daily_block:
+        for cells in parse_md_table_rows(daily_block):
+            if len(cells) < 11:
+                continue
+            date_key, src, model, sub = cells[0], cells[1], cells[2], cells[3]
+            source = "opencode" if src.replace("`", "").strip() == "OC" else "claude-code"
+            bucket = imported_daily[date_key][(source, model.replace("`", ""), sub.replace("`", ""))]
+            bucket["input"] += parse_int_cell(cells[4])
+            bucket["output"] += parse_int_cell(cells[5])
+            bucket["cache_create"] += parse_int_cell(cells[6])
+            bucket["cache_read"] += parse_int_cell(cells[7])
+            bucket["messages"] += parse_int_cell(cells[8])
+            bucket["cost_usd"] += parse_float_cell(cells[10])
+
+    imported_sessions = {}
+    if sessions_block:
+        for index, cells in enumerate(parse_md_table_rows(sessions_block), start=1):
+            if len(cells) < 9:
+                continue
+            sid = cells[0].replace("`", "") or f"legacy-{index}"
+            src = cells[1].replace("`", "")
+            title_raw = cells[2]
+            parent_id = None
+            if title_raw.startswith("↳ "):
+                parent_id = "legacy-parent"
+                title_raw = title_raw[2:]
+            title = title_raw.strip() or None
+            start = parse_human_dt(cells[3])
+            billed = parse_int_cell(cells[6])
+            imported_sessions[sid] = {
+                "title": title,
+                "source": "opencode" if src == "OC" else "claude-code",
+                "parent_id": parent_id,
+                "first_ts": start,
+                "last_ts": start,
+                "tokens": {
+                    "input": billed,
+                    "output": 0,
+                    "cache_create": 0,
+                    "cache_read": 0,
+                    "reasoning": 0,
+                    "cost_usd": parse_float_cell(cells[7]),
+                    "messages": parse_int_cell(cells[5]),
+                },
+                "resets": parse_int_cell(cells[8]),
+                "user_msg_count": 0,
+            }
+
+    return {
+        "schema_version": 1,
+        "machines": {
+            "legacy-import": build_machine_snapshot(imported_daily, imported_sessions)
+        },
+    }
+
+
+def merge_machine_project_daily(machine_snapshots: dict) -> dict:
+    merged = defaultdict(lambda: defaultdict(new_bucket))
+    for snapshot in machine_snapshots.values():
+        for row in snapshot.get("daily", []):
+            date_key = row.get("date")
+            if not date_key:
+                continue
+            key = (
+                row.get("source") or "claude-code",
+                row.get("model") or "unknown",
+                row.get("subagent_type") or "main",
+            )
+            bucket = merged[date_key][key]
+            for field in bucket:
+                bucket[field] += row.get(field, 0) or 0
+    return merged
+
+
+def merge_machine_project_sessions(machine_snapshots: dict) -> dict:
+    merged = {}
+    for machine_id, snapshot in machine_snapshots.items():
+        for row in snapshot.get("sessions", []):
+            session_id = row.get("session_id") or "unknown"
+            merged[f"{machine_id}:{session_id}"] = {
+                "display_id": session_id[:8],
+                "machine_id": machine_id,
+                "title": row.get("title"),
+                "source": row.get("source"),
+                "parent_id": row.get("parent_id"),
+                "first_ts": parse_ts(row.get("first_ts")),
+                "last_ts": parse_ts(row.get("last_ts")),
+                "tokens": {
+                    **new_bucket(),
+                    **(row.get("tokens") or {}),
+                },
+                "resets": row.get("resets", 0) or 0,
+                "user_msg_count": row.get("user_msg_count", 0) or 0,
+            }
+    return merged
 
 
 def build_registry_content(
@@ -665,13 +1097,18 @@ def build_registry_content(
     src_summary = " · ".join(
         f"{k}={v}" for k, v in sorted(sources_count.items())
     ) or "—"
+    summary = executive_summary(project_daily, project_sessions)
     body = [
         f"# Registro de uso de tokens — `{project_name}`",
         "",
         f"_Autogenerado por `/token-usage`. Última actualización: {now}_",
         "",
-        "> Todo lo que está entre los marcadores `<!-- BEGIN -->` / `<!-- END -->` se reescribe en cada corrida.",
+        "> Los bloques visibles se regeneran en cada corrida, pero ahora se reconstruyen fusionando snapshots por máquina para no perder histórico de otros equipos.",
         "> Las notas fuera de esos bloques se preservan — podés dejar comentarios ahí.",
+        "",
+        "## Resumen ejecutivo",
+        "",
+        *summary,
         "",
         "## Totales históricos (Claude Code + opencode)",
         "",
@@ -695,6 +1132,7 @@ def build_registry_content(
         f"## Sesiones (últimas {SESSIONS_LIMIT})",
         "",
         "> **Src**: `CC` = Claude Code, `OC` = opencode.",
+        "> **Máquina**: snapshot detectado por `COMPUTERNAME` / `HOSTNAME` / `platform.node()`; se reemplaza solo el de la máquina actual y se conservan los demás.",
         "> **↳** indica sub-agente delegado (opencode usa `session.parent_id`).",
         "> **Reinicios**: heurística de `parentUuid=null` en user messages — solo aplica a Claude Code.",
         "> La señal más fuerte de contexto optimizado es **muchas sesiones cortas con títulos claros** en vez de una gigante.",
@@ -706,7 +1144,7 @@ def build_registry_content(
         "## Historial de consultas",
         "",
         "<!-- BEGIN:QUERY_LOG -->",
-        "\n".join(log_entries) if log_entries else "_Aún no hay consultas._",
+        format_query_log_md(log_entries),
         "<!-- END:QUERY_LOG -->",
         "",
     ]
@@ -727,14 +1165,16 @@ def update_registry_md(
     if not cwd.exists() or not cwd.is_dir():
         return None
     md_path = cwd / REGISTRY_FILENAME
+    state_path = cwd / STATE_FILENAME
 
+    existing_text = ""
     existing_log: list[str] = []
     if md_path.exists():
         try:
-            existing = md_path.read_text(encoding="utf-8")
+            existing_text = md_path.read_text(encoding="utf-8")
         except OSError:
-            existing = ""
-        m = LOG_MARKER_RE.search(existing)
+            existing_text = ""
+        m = LOG_MARKER_RE.search(existing_text)
         if m:
             raw = m.group(1).strip()
             if raw and raw not in ("_No queries yet._", "_Aún no hay consultas._"):
@@ -744,9 +1184,43 @@ def update_registry_md(
     if len(existing_log) > MAX_LOG_ENTRIES:
         existing_log = existing_log[-MAX_LOG_ENTRIES:]
 
+    machine_snapshots = load_machine_snapshots_from_sidecar(state_path) or load_machine_snapshots(existing_text)
+    if not machine_snapshots["machines"]:
+        legacy = import_legacy_registry(existing_text)
+        if legacy:
+            machine_snapshots = legacy
+    current_snapshot = build_machine_snapshot(
+        project_daily,
+        project_sessions,
+    )
+    legacy_snapshot = machine_snapshots["machines"].get("legacy-import")
+    if legacy_snapshot:
+        overlap = (
+            snapshot_session_ids(legacy_snapshot) & snapshot_session_ids(current_snapshot)
+        ) or (
+            snapshot_session_short_ids(legacy_snapshot)
+            & snapshot_session_short_ids(current_snapshot)
+        )
+        if overlap:
+            del machine_snapshots["machines"]["legacy-import"]
+    machine_snapshots["machines"][current_machine_id()] = current_snapshot
+    merged_daily = merge_machine_project_daily(machine_snapshots["machines"])
+    merged_sessions = merge_machine_project_sessions(machine_snapshots["machines"])
+    registry_content = build_registry_content(
+        project_name,
+        merged_daily,
+        merged_sessions,
+        existing_log,
+    )
+    registry_content = remove_marker_block(registry_content, MACHINE_SNAPSHOTS_MARKER)
+
     try:
+        state_path.write_text(
+            json.dumps(machine_snapshots, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         md_path.write_text(
-            build_registry_content(project_name, project_daily, project_sessions, existing_log),
+            registry_content,
             encoding="utf-8",
         )
     except OSError as exc:

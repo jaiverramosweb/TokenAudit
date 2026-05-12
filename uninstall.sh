@@ -33,6 +33,8 @@ fi
 
 TARGET_DIR="${BASE_DIR}/skills/${SKILL_NAME}"
 SETTINGS_FILE="${BASE_DIR}/settings.json"
+OPENCODE_SKILL_DIR="${HOME}/.config/opencode/skills/${SKILL_NAME}"
+OPENCODE_COMMAND_FILE="${HOME}/.config/opencode/commands/token-usage.md"
 
 ok()   { printf "  \xE2\x9C\x94 %s\n" "$*"; }
 warn() { printf "  ! %s\n" "$*"; }
@@ -58,6 +60,20 @@ if [ -d "${TARGET_DIR}" ]; then
     ok "Eliminado ${TARGET_DIR}"
 else
     warn "No existía ${TARGET_DIR} (nada para borrar)"
+fi
+
+if [ -d "${OPENCODE_SKILL_DIR}" ]; then
+    rm -rf "${OPENCODE_SKILL_DIR}"
+    ok "Eliminado ${OPENCODE_SKILL_DIR}"
+else
+    warn "No existía ${OPENCODE_SKILL_DIR} (nada para borrar)"
+fi
+
+if [ -f "${OPENCODE_COMMAND_FILE}" ]; then
+    rm -f "${OPENCODE_COMMAND_FILE}"
+    ok "Eliminado ${OPENCODE_COMMAND_FILE}"
+else
+    warn "No existía ${OPENCODE_COMMAND_FILE} (nada para borrar)"
 fi
 
 # ---- quitar el hook del settings.json --------------------------------------

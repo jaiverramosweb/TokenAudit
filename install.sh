@@ -42,6 +42,7 @@ done
 SKILL_NAME="token-usage"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="${REPO_ROOT}/skills/${SKILL_NAME}"
+OPENCODE_SOURCE_COMMAND="${REPO_ROOT}/opencode/token-usage.md"
 
 if [ "${MODE}" = "project" ]; then
     BASE_DIR="$(pwd)/.claude"
@@ -55,6 +56,9 @@ fi
 
 TARGET_DIR="${BASE_DIR}/skills/${SKILL_NAME}"
 SETTINGS_FILE="${BASE_DIR}/settings.json"
+OPENCODE_BASE_DIR="${HOME}/.config/opencode"
+OPENCODE_SKILL_DIR="${OPENCODE_BASE_DIR}/skills/${SKILL_NAME}"
+OPENCODE_COMMAND_FILE="${OPENCODE_BASE_DIR}/commands/token-usage.md"
 
 # ---- helpers ----------------------------------------------------------------
 ok()   { printf "  \xE2\x9C\x94 %s\n" "$*"; }
@@ -90,6 +94,7 @@ ok "Python detectado: $(${PYTHON} --version 2>&1) (comando: ${PYTHON})"
 for f in SKILL.md token_usage.py subagent_tokens_hook.py; do
     [ -f "${SOURCE_DIR}/${f}" ] || err "Archivo faltante: ${SOURCE_DIR}/${f}"
 done
+[ -f "${OPENCODE_SOURCE_COMMAND}" ] || err "Archivo faltante: ${OPENCODE_SOURCE_COMMAND}"
 ok "Archivos fuente verificados"
 
 # ---- copiar a destino -------------------------------------------------------
@@ -98,6 +103,13 @@ cp "${SOURCE_DIR}/SKILL.md" "${TARGET_DIR}/"
 cp "${SOURCE_DIR}/token_usage.py" "${TARGET_DIR}/"
 cp "${SOURCE_DIR}/subagent_tokens_hook.py" "${TARGET_DIR}/"
 ok "Copiado a ${TARGET_DIR}"
+
+# ---- instalar mirror para opencode ------------------------------------------
+mkdir -p "${OPENCODE_SKILL_DIR}" "$(dirname "${OPENCODE_COMMAND_FILE}")"
+cp "${SOURCE_DIR}/SKILL.md" "${OPENCODE_SKILL_DIR}/SKILL.md"
+cp "${SOURCE_DIR}/token_usage.py" "${OPENCODE_SKILL_DIR}/token_usage.py"
+cp "${OPENCODE_SOURCE_COMMAND}" "${OPENCODE_COMMAND_FILE}"
+ok "Copiado a ${OPENCODE_SKILL_DIR} y ${OPENCODE_COMMAND_FILE}"
 
 # ---- mergear hook en settings.json -----------------------------------------
 "${PYTHON}" - "${SETTINGS_FILE}" "${PYTHON}" "${HOOK_COMMAND_PATH}" <<'PYEOF'
@@ -191,6 +203,9 @@ Qué se instaló:
   - ${TARGET_DIR}/SKILL.md
   - ${TARGET_DIR}/token_usage.py
   - ${TARGET_DIR}/subagent_tokens_hook.py
+  - ${OPENCODE_SKILL_DIR}/SKILL.md
+  - ${OPENCODE_SKILL_DIR}/token_usage.py
+  - ${OPENCODE_COMMAND_FILE}
   - entrada en ${SETTINGS_FILE}
     (hooks.PostToolUse con matcher "Agent|Task")
 

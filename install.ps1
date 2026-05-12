@@ -60,6 +60,7 @@ Idempotente: podes correrlo mas de una vez sin duplicar nada.
 $skillName = "token-usage"
 $repoRoot = $PSScriptRoot
 $sourceDir = Join-Path $repoRoot "skills\$skillName"
+$opencodeSourceCommand = Join-Path $repoRoot "opencode\token-usage.md"
 
 if ($Project) {
     $baseDir = Join-Path $PWD ".claude"
@@ -72,6 +73,9 @@ if ($Project) {
 
 $targetDir = Join-Path $baseDir "skills\$skillName"
 $settingsFile = Join-Path $baseDir "settings.json"
+$opencodeBaseDir = Join-Path $HOME ".config\opencode"
+$opencodeSkillDir = Join-Path $opencodeBaseDir "skills\$skillName"
+$opencodeCommandFile = Join-Path $opencodeBaseDir "commands\token-usage.md"
 
 # Para modo local, el hook usa path absoluto con forward slashes
 if (-not $Project) {
@@ -116,6 +120,9 @@ foreach ($f in @("SKILL.md", "token_usage.py", "subagent_tokens_hook.py")) {
         Write-Err "Archivo faltante: $(Join-Path $sourceDir $f)"
     }
 }
+if (-not (Test-Path $opencodeSourceCommand)) {
+    Write-Err "Archivo faltante: $opencodeSourceCommand"
+}
 Write-Ok "Archivos fuente verificados"
 
 # ---- copiar archivos -------------------------------------------------------
@@ -126,6 +133,17 @@ Copy-Item (Join-Path $sourceDir "SKILL.md")                 $targetDir -Force
 Copy-Item (Join-Path $sourceDir "token_usage.py")           $targetDir -Force
 Copy-Item (Join-Path $sourceDir "subagent_tokens_hook.py")  $targetDir -Force
 Write-Ok "Copiado a $targetDir"
+
+if (-not (Test-Path $opencodeSkillDir)) {
+    New-Item -ItemType Directory -Path $opencodeSkillDir -Force | Out-Null
+}
+if (-not (Test-Path (Split-Path -Parent $opencodeCommandFile))) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $opencodeCommandFile) -Force | Out-Null
+}
+Copy-Item (Join-Path $sourceDir "SKILL.md")        $opencodeSkillDir -Force
+Copy-Item (Join-Path $sourceDir "token_usage.py")  $opencodeSkillDir -Force
+Copy-Item $opencodeSourceCommand                    $opencodeCommandFile -Force
+Write-Ok "Copiado a $opencodeSkillDir y $opencodeCommandFile"
 
 # ---- mergear hook en settings.json (via Python para reusar logica) --------
 $mergeScript = @'
@@ -231,6 +249,9 @@ Write-Host "Que se instalo:"
 Write-Host "  - $targetDir\SKILL.md"
 Write-Host "  - $targetDir\token_usage.py"
 Write-Host "  - $targetDir\subagent_tokens_hook.py"
+Write-Host "  - $opencodeSkillDir\SKILL.md"
+Write-Host "  - $opencodeSkillDir\token_usage.py"
+Write-Host "  - $opencodeCommandFile"
 Write-Host "  - entrada en $settingsFile"
 Write-Host "    (hooks.PostToolUse con matcher 'Agent|Task')"
 Write-Host ""

@@ -134,7 +134,8 @@ Remove-Item $tmp
 El `bootstrap.sh` (o `bootstrap.ps1`, que lo invoca vía `bash.exe`):
 
 1. Clona el repo a `~/TokenAudit/` (si ya existe, hace `git pull --ff-only`).
-2. Ejecuta `install.sh` pasándole los argumentos que le diste (ej `--project`).
+2. Ejecuta `install.sh` / `install.ps1` pasándole los argumentos que le diste (ej `--project`).
+3. Actualiza tanto **Claude Code** como **OpenCode** en la misma corrida.
 
 **Overrides útiles** (variables de entorno antes del comando):
 
@@ -179,6 +180,8 @@ cd ~/TokenAudit
 |------|----------------|
 | `~/.claude/skills/token-usage/` | Los 3 archivos de la skill |
 | `~/.claude/settings.json` | Se **agrega** (merge, no pisa) el hook `PostToolUse` |
+| `~/.config/opencode/skills/token-usage/` | Skill espejo para OpenCode |
+| `~/.config/opencode/commands/token-usage.md` | Comando `/token-usage` para OpenCode |
 
 **Modo proyecto** (relativo al proyecto actual):
 
@@ -283,6 +286,14 @@ persistente: vive en el proyecto, crece con el tiempo y tiene:
 - **Historial de consultas**: append-only, una línea por cada vez que
   alguien corrió `/token-usage` en ese proyecto.
 
+También se genera:
+
+- `.token_usage_state.json`: sidecar técnico con snapshots por máquina.
+
+Ese archivo no es para lectura humana; existe para que `TOKEN_USAGE.md`
+pueda reconstruirse sin perder histórico cuando el mismo proyecto se usa
+desde varias computadoras.
+
 > **Recomendación fuerte:** agregá `TOKEN_USAGE.md` a tu `.gitignore`
 > (o al `~/.config/git/ignore` global) si no querés que quede
 > commiteado. Es un archivo personal/del equipo, no forma parte del
@@ -294,6 +305,7 @@ persistente: vive en el proyecto, crece con el tiempo y tiene:
 
 Volvé a correr **la misma línea** con la que instalaste. El bootstrap es
 idempotente: si el clone ya existe hace `git pull --ff-only` y reinstala.
+Eso sirve tanto para instalación como para actualización.
 
 **Git Bash / macOS / Linux:**
 
@@ -315,8 +327,8 @@ git pull
 ./install.sh              # o --project si esa fue tu instalación
 ```
 
-Después de cualquier update, **reiniciá Claude Code** para que tome los
-cambios del hook.
+Después de cualquier update, **reiniciá Claude Code y OpenCode** si los
+tenías abiertos.
 
 ---
 

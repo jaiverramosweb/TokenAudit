@@ -52,6 +52,18 @@ Each Claude Code JSONL line contains, among other things:
 The script walks the JSONL, groups by **date x project x model x agent**,
 and attributes each sub-agent message to its launching `subagent_type`
 by backtracking the `parentUuid` chain to the parent Task tool_use call.
+Project labels are normalized from the recorded `cwd` basename when
+possible so the report shows readable names like `sensei-discovery`
+instead of hashed/sanitized Claude storage folder names.
+Session titles are also cleaned to suppress harness noise like
+`<local-command-caveat>` and convert command wrappers into readable
+labels such as `Comando /token-usage`.
+The generated `TOKEN_USAGE.md` should prioritize preview readability:
+query history renders as a Markdown table and the file starts with an
+executive summary (top day, top model, top agent, average per session).
+Internal machine snapshots should live in a sidecar file
+`.token_usage_state.json` instead of inside the Markdown report so the
+preview stays clean.
 
 ## How to Run
 
@@ -131,7 +143,9 @@ had data in the current query. The file contains three sections:
    for that project (billed, input, output, cache_create, cache_read,
    messages).
 2. **Daily breakdown** — per-day x model x agent table for the entire
-   history of the project. Regenerated on each run; enclosed in
+   history of the project. Regenerated on each run from a merged
+   per-machine snapshot store so re-running on another computer APPENDS to
+   the accumulated history instead of wiping it. Enclosed in
    `<!-- BEGIN:DAILY_TOTALS --> ... <!-- END:DAILY_TOTALS -->`.
 3. **Sessions** — last 50 sessions sorted most-recent first. Per row:
    sessionId (8-char prefix), auto-detected title (first meaningful user
@@ -152,7 +166,8 @@ had data in the current query. The file contains three sections:
 
 Content outside those markers is preserved — feel free to add context,
 links, or notes above/below the generated blocks. Content inside them is
-overwritten on every run.
+recomputed on every run from the merged machine snapshots, so the current
+machine replaces only its own contribution and keeps the others.
 
 The path a project's registry lands in is the `cwd` recorded in the
 transcripts (the actual working directory of the session), not the

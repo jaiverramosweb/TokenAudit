@@ -41,6 +41,8 @@ if ($Project) {
 
 $targetDir = Join-Path $baseDir "skills\$skillName"
 $settingsFile = Join-Path $baseDir "settings.json"
+$opencodeSkillDir = Join-Path $HOME ".config\opencode\skills\$skillName"
+$opencodeCommandFile = Join-Path $HOME ".config\opencode\commands\token-usage.md"
 
 Write-Host ""
 Write-Host "=== TokenAudit :: desinstalando $skillName (PowerShell) ===" -ForegroundColor Cyan
@@ -68,6 +70,20 @@ if (Test-Path $targetDir) {
     Write-Host "  [OK] Eliminado $targetDir" -ForegroundColor Green
 } else {
     Write-Host "  [!]  No existia $targetDir (nada para borrar)" -ForegroundColor Yellow
+}
+
+if (Test-Path $opencodeSkillDir) {
+    Remove-Item -Recurse -Force $opencodeSkillDir
+    Write-Host "  [OK] Eliminado $opencodeSkillDir" -ForegroundColor Green
+} else {
+    Write-Host "  [!]  No existia $opencodeSkillDir (nada para borrar)" -ForegroundColor Yellow
+}
+
+if (Test-Path $opencodeCommandFile) {
+    Remove-Item -Force $opencodeCommandFile
+    Write-Host "  [OK] Eliminado $opencodeCommandFile" -ForegroundColor Green
+} else {
+    Write-Host "  [!]  No existia $opencodeCommandFile (nada para borrar)" -ForegroundColor Yellow
 }
 
 # ---- quitar hook de settings.json ------------------------------------------
